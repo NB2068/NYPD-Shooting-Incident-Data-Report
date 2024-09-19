@@ -1,0 +1,222 @@
+---
+title: "NYPD Shooting Incident Data Report"
+author: "Student"
+date: "2024-08-20"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load necessary libraries
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(leaflet)
+library(sf)
+library(caret)
+```
+This report provides a comprehensive analysis of the NYPD crime data, focusing on the spatial and temporal distribution of incidents across New York City. The data set, sourced from the NYPD, encompasses a range of variables including incident types, dates, locations, and demographic information about victims and perpetrators. The primary objective of this analysis is to explore the trends in crime rates over time and identify patterns based on geographic locations. This report will leverage statistical and visualization tools to provide insights into crime patterns, aiming to assist policymakers, law enforcement agencies, and community stakeholders in making informed decisions to enhance public safety.
+Key aspects of the analysis include Temporal Analysis and Spatial Analysis. We will examine crime trends across different months and years to identify any significant increases or decreases in incident rates. We will map the distribution of incidents to detect hotspots and areas with higher crime rates.
+
+We will use the libraries dplyr, lubridate, ggplot2, leaflet, sf and caret for this project.We will start by reading in the data from the main csv file "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD. This file contains the list of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year.
+```{r get_data}
+## Get current data
+nypd_data <- read.csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+head(nypd_data)
+```
+We do not need some of the columns for our analysis so we will remove them.
+```{r remove_cols}
+nypd_data <- nypd_data %>%
+  select(-c(LOC_OF_OCCUR_DESC, PRECINCT, JURISDICTION_CODE, LOC_CLASSFCTN_DESC, LOCATION_DESC, STATISTICAL_MURDER_FLAG,PERP_AGE_GROUP,PERP_SEX,PERP_RACE,X_COORD_CD,Y_COORD_CD,Lon_Lat))
+```
+
+Now, let us check the datatypes of the columns.
+```{r check_datatype}
+str(nypd_data)
+```
+
+OCCUR_DATE is not a Date type so we will make it a Date type. OCCUR_TIME is not time type so we will convert it to a Time type. We will use library(lubridate) for this.
+```{r char_todateandtime}
+nypd_data <- nypd_data %>%
+     mutate(OCCUR_DATE = mdy(OCCUR_DATE),
+            OCCUR_TIME = hms(OCCUR_TIME))
+```
+Lets look at the summary to see if we have changed the datatype correctly.
+```{r summary}
+summary(nypd_data)
+```
+We will now add a new column 'Year' to extract the year from OCCUR_DATE.
+```{r extract_year}
+## Extract Year from OCCUR_DATE
+nypd_data <- nypd_data %>%
+  mutate(Year = year(OCCUR_DATE))
+head(nypd_data)
+```
+
+## Analysis of the number of incidents by month
+
+Let us analyze how the number of incidents vary by month.
+```{r monthly_incidents}
+nypd_data_bymonth <- nypd_data %>%
+## Extract month name and order it
+     mutate(
+         Month = format(OCCUR_DATE, "%B"),
+         Month = factor(Month, levels = month.name)
+    ) %>%
+## Group by Month and count incidents
+    group_by(Month) %>%
+     summarize(Incident_Count = n(), .groups = 'drop')
+head(nypd_data_bymonth)
+```
+Now, let us visualize this.
+```{r monthly_incidents_plot}
+ggplot(nypd_data_bymonth, aes(x = Month, y = Incident_Count)) +
+    geom_bar(stat = "identity", fill = "salmon") +
+    labs(title = "Number of Incidents by Month", x = "Month", y = "Number of Incidents") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+We see that most number of incidents occur in summer season. From the graph we can see that the number of incidents increased from February to July and then decrease from August to November.
+
+## Interactive map to see the incidents in different boroughs
+
+Now, let us visualize the incidents in different boroughs on the map. We need to convert our data to an sf object for this but before that, we need to filter out rows with missing values in the Longitude or Latitude columns.
+```{r}
+# Filtering out rows with missing coordinates
+nypd_filtered <- nypd_data %>%
+  filter(!is.na(Longitude) & !is.na(Latitude))
+```
+
+```{r}
+# Converting to sf object
+nypd_sf <- st_as_sf(nypd_filtered, coords = c("Longitude", "Latitude"), crs = 4326)
+```
+
+```{r}
+# Ensuring that the coordinates are numeric
+nypd_sf <- nypd_sf %>%
+  mutate(Latitude = as.numeric(st_coordinates(.)[, "Y"]),
+         Longitude = as.numeric(st_coordinates(.)[, "X"]))
+```
+We will use GeoJSON file from "https://data.cityofnewyork.us/api/geospatial/tqmj-j8zm?method=export&format=GeoJSON" to add the boundaries to separate the boroughs.
+```{r}
+# Loading the GeoJSON file
+boroughs_sf <- st_read("https://data.cityofnewyork.us/api/geospatial/tqmj-j8zm?method=export&format=GeoJSON")
+```
+We will use leaflet library to create the interactive map showing the incidents.
+```{r}
+# Creating an interactive map
+leaflet() %>%
+  addProviderTiles(providers$OpenStreetMap) %>%
+  addPolygons(data = boroughs_sf, 
+              fillColor = "lightgrey", 
+              color = "black", 
+              weight = 2, 
+              opacity = 1, 
+              fillOpacity = 0.3) %>%
+  addCircles(data = nypd_sf, 
+             radius = 2, 
+             color = "purple", 
+             opacity = 0.5, 
+             fillOpacity = 0.5) %>%
+  addLegend(position = "bottomright", 
+            colors = "purple", 
+            labels = "Incidents") %>%
+  addLabelOnlyMarkers(
+    data = boroughs_sf,
+    ~ st_coordinates(st_centroid(geometry))[,1],
+    ~ st_coordinates(st_centroid(geometry))[,2],
+    label = ~ boro_name,  
+    labelOptions = labelOptions(noHide = TRUE, textOnly = TRUE, direction = 'auto', offset = c(0, -10))
+  ) %>%
+  setView(lng = mean(nypd_sf$Longitude, na.rm = TRUE), 
+          lat = mean(nypd_sf$Latitude, na.rm = TRUE), 
+          zoom = 12) 
+
+```
+
+## Visualizing the number of incidents involving male and female victims over time
+
+We would like to visualize how the number of incidents involving male and female victims has changed over time.
+```{r groupby_genderandyear}
+# Count incidents by year and gender
+incidents_by_gender_year <- nypd_data %>%
+  filter(VIC_SEX %in% c("M", "F")) %>%
+  group_by(Year, VIC_SEX) %>%
+  summarize(Incident_Count = n(), .groups = 'drop')
+incidents_by_gender_year
+```
+We will use ggplot2 to create a line plot to show trends over time.
+```{r plot_incidents_by_gender_year}
+# Plot the data
+ggplot(incidents_by_gender_year, aes(x = Year, y = Incident_Count, color = VIC_SEX, group = VIC_SEX)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Trend of Incidents Involving Male and Female Victims Over Time",
+    x = "Year",
+    y = "Number of Incidents",
+    color = "Victim Sex"
+  ) +
+  theme_minimal()
+```
+
+From the graph we see that the number of incidents were decreasing from 2006 to 2019 but then suddenly increased from 2019 to 2021 and then they drastically decreased from 2021 to 2023 for males. Number of incidents for females are considerably lower compared to males.
+
+## Predictive Modeling to predict the number of incidents in 2024
+
+We will create a model to predict the number of incidents where the victim would be female or male in 2024. We will use the train function from the caret package for this.
+```{r}
+# Group the data and get the incident count
+demo_data <- nypd_data %>%
+  group_by(VIC_SEX, Year) %>%
+  mutate(Incident_Count = n()) %>%
+  ungroup()
+```
+We will use Generalized Linear Model (GLM) with a Poisson distribution for this as we need to get the incident count.
+```{r}
+# Train the Generalized Linear Model (GLM)
+model_demographic <- train(
+  Incident_Count ~ VIC_SEX + Year,
+  data = demo_data,
+  method = "glm",
+  family = "poisson"
+)
+```
+
+```{r}
+# Prepare new data for prediction
+future_demographics <- data.frame(
+  VIC_SEX = c("M", "F"),
+  Year = c(2024, 2024)
+)
+```
+
+```{r}
+# Predict incident counts based on new demographics
+demographic_predictions <- predict(model_demographic, newdata = future_demographics)
+
+# View the predictions
+print(demographic_predictions)
+```
+From the above prediction we see that the number of predicted incidents in 2024 is 1258.9808 for males and 136.7189 for females.
+
+## Bias
+When analyzing and reporting NYPD Shooting Incident Data (Historic), several potential biases and limitations can affect the accuracy and interpretation of the results. Understanding these biases is crucial for ensuring that the insights derived from the analysis are reliable and actionable. Some of these biases are:
+
+Reporting Bias: Certain types of crimes may be underreported, especially sensitive incidents such as domestic violence and sexual assault. This underreporting can skew the data and lead to inaccurate conclusions about the prevalence and distribution of crimes. On the other hand, some areas may have higher reporting rates due to increased community vigilance or more proactive policing, which might not necessarily reflect a higher actual crime rate.
+
+Temporal Bias: Focusing on data from a limited time frame without considering seasonal patterns can lead to misleading conclusions. Changes in crime reporting practices, law enforcement policies, or socio-economic conditions over time can impact crime rates and trends. Failing to account for these changes may result in incorrect interpretations.
+
+Demographic Bias: The analysis of crime data by demographic factors such as age, sex, and race can be biased if certain groups are overrepresented or underrepresented in the data. For example, from the "Trend of Incidents Involving Male and Female Victims Over Time" above we see that the from 2006 to 2023, the number of incidents with female victims is considerably lower than the number of incidents with male victims. But it is possible that females are underrepresented in this data.
+
+Socio-Economic Bias: Changes in socio-economic conditions, such as unemployment rates or housing instability, can influence crime rates. For example, increase in the number of incidents from 2019 to 2021. If these factors are not included in the analysis, the results may not fully capture the underlying drivers of crime.
+
+## Conclusion
+The analysis of the NYPD crime data has provided valuable insights into crime trends and patterns across New York City. The analysis revealed variations in crime rates over different months and years, highlighting periods of increased incidents (summer months and from 2019 to 2021) or decreased incidents. These trends can help in understanding seasonal or year-specific fluctuations in crime rates. The mapping of incident locations identified specific hotspots and areas with higher crime rates. This is crucial for targeted law enforcement interventions and resource allocation to improve public safety in high-crime areas. By leveraging these insights, stakeholders can develop more effective strategies for crime prevention, resource management, and community engagement. Future analyses could build upon these findings by incorporating additional variables, such as economic factors or changes in law enforcement practices, to gain a deeper understanding of crime dynamics in New York City.
+
+
